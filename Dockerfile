@@ -12,8 +12,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose the port on which the Flask app runs
-EXPOSE 8000
+EXPOSE 8080
 
-# Set the start command to use gunicorn, which is now installed in the container
-# We explicitly set a low number of workers and threads to conserve memory.
-CMD ["gunicorn", "--workers", "1", "--threads", "1", "--bind", "0.0.0.0:8000", "main:app"]
+# The PORT environment variable is automatically provided by Cloud Run.
+# We will use it in the Gunicorn command.
+CMD gunicorn --workers 1 --threads 1 --bind 0.0.0.0:8080 main:app
