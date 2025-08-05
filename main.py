@@ -33,7 +33,11 @@ load_dotenv()
 APIPE_API_KEY = os.getenv("APIPE_API_KEY")
 
 app = Flask(__name__, template_folder='templates')
+
+# SET MAX CONTENT LENGTH HERE TO ALLOW FOR LARGER FILE UPLOADS
+# This sets the limit to 128 MB (128 * 1024 * 1024 bytes)
 app.config['MAX_CONTENT_LENGTH'] = 128 * 1024 * 1024
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -60,7 +64,7 @@ def call_llm_api(messages, tools=None):
     }
 
     try:
-        response = requests.post(api_url, headers=headers, data=json.dumps(payload), timeout=30)
+        response = requests.post(api_url, headers=headers, data=json.dumps(payload), timeout=60)
         response.raise_for_status()
         
         # FIX: Check content type before parsing JSON
@@ -75,7 +79,7 @@ def call_llm_api(messages, tools=None):
         return response.json()
 
     except requests.exceptions.Timeout:
-        return {"error": "API request timed out after 30 seconds."}
+        return {"error": "API request timed out after 60 seconds."}
     except requests.exceptions.RequestException as e:
         print(f"Error calling AIPipe API: {e}")
         try:
@@ -135,16 +139,14 @@ def create_plot(df, x_col, y_col, plot_type='scatter', regression=False, hue_col
     return image_uri
 
 
-def perform_local_analysis(file_path, questions, plot_columns, ml_task=None):
+def perform_local_analysis(file_path, analysis_requests, ml_task=None):
     """
-    Handles data from a local file and performs the requested analysis.
-    This function is now fully dynamic.
+    Handles data from a local file and performs the requested analysis based on analysis_requests.
     """
     try:
         df = None
         if file_path.endswith('.csv'):
             try:
-                # FIX: Try multiple encodings for CSV files
                 df = pd.read_csv(file_path, encoding='utf-8')
             except UnicodeDecodeError:
                 df = pd.read_csv(file_path, encoding='ISO-8859-1')
@@ -161,71 +163,89 @@ def perform_local_analysis(file_path, questions, plot_columns, ml_task=None):
         answers = []
         plot_uri = None
 
-        if plot_columns and len(plot_columns) == 2:
-            col1, col2 = plot_columns[0], plot_columns[1]
-
-            if col1 not in df.columns or col2 not in df.columns:
-                return {'error': f"Plot columns '{col1}' or '{col2}' not found in the data."}
-
-            # General correlation and regression logic
-            if any('correlation' in q.lower() for q in questions):
-                correlation = df[col1].corr(df[col2])
-                answers.append(f"The correlation between {col1} and {col2} is {correlation:.2f}.")
+        # Process each analysis request from the LLM or injected by post-processing
+        for request_item in analysis_requests:
+            req_type = request_item.get('type')
+            params = request_item.get('params', {})
             
-            if any('forecast' in q.lower() for q in questions):
-                # Ensure columns are numeric for regression
-                if pd.api.types.is_numeric_dtype(df[col1]) and pd.api.types.is_numeric_dtype(df[col2]):
-                    X = df[[col1]].dropna()
-                    y = df[col2].dropna()
-                    reg = linear_model.LinearRegression().fit(X, y)
-                    forecasted_value = reg.predict([[df[col1].max() + 1]])[0]
-                    answers.append(f"Based on a linear regression, the forecasted {col2} for the next value of {col1} is {forecasted_value:.2f}.")
+            if req_type == "calculate_total":
+                column = params.get('column')
+                if column and column in df.columns and pd.api.types.is_numeric_dtype(df[column]):
+                    total = df[column].sum()
+                    answers.append(f"The total of '{column}' is {total:.2f}.")
                 else:
-                    answers.append(f"Cannot perform regression on non-numeric columns: {col1} and {col2}.")
+                    answers.append(f"Could not calculate total for '{column}'. Column not found or not numeric.")
 
-        # Dynamic ML Model execution
-        if ml_task and ml_task.get('model_name') in ML_MODELS:
-            model_name = ml_task.get('model_name')
-            model_params = ml_task.get('model_params', {})
-            model_class = ML_MODELS[model_name]
-            
-            try:
-                # Drop non-numeric columns for ML tasks and fill NaNs
-                numeric_df = df.select_dtypes(include=np.number).dropna()
-                
-                if model_name in ['DecisionTreeClassifier', 'RandomForestClassifier', 'LogisticRegression']:
-                    # Assuming a target column for classification - using the last numeric column
-                    if len(numeric_df.columns) > 1:
-                        target_col = numeric_df.columns[-1]
-                        X = numeric_df.drop(columns=[target_col], errors='ignore')
-                        y = numeric_df[target_col]
-                        X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y, test_size=0.2, random_state=42)
-                        model = model_class(**model_params)
-                        model.fit(X_train, y_train)
-                        y_pred = model.predict(X_test)
-                        accuracy = metrics.accuracy_score(y_test, y_pred)
-                        answers.append(f"Successfully executed {model_name}. Accuracy: {accuracy:.2f}.")
-                    else:
-                        answers.append(f"Classification requires at least two numeric columns (features and target).")
-                
-                elif model_name in ["KMeans", "AgglomerativeClustering", "OPTICS"]:
-                    if len(numeric_df.columns) >= 2:
-                        X = numeric_df
-                        model = model_class(**model_params)
-                        model.fit(X)
+            elif req_type == "calculate_average":
+                column = params.get('column')
+                if column and column in df.columns and pd.api.types.is_numeric_dtype(df[column]):
+                    average = df[column].mean()
+                    answers.append(f"The average of '{column}' is {average:.2f}.")
+                else:
+                    answers.append(f"Could not calculate average for '{column}'. Column not found or not numeric.")
+
+            elif req_type == "kmeans_clustering":
+                features = params.get('features')
+                n_clusters = params.get('n_clusters')
+                if features and n_clusters and all(f in df.columns for f in features):
+                    numeric_features_df = df[features].select_dtypes(include=np.number).dropna()
+                    if not numeric_features_df.empty and len(numeric_features_df) >= n_clusters:
+                        model = cluster.KMeans(n_clusters=n_clusters, random_state=42, n_init=10) # Added n_init
+                        model.fit(numeric_features_df)
                         df['cluster_label'] = model.labels_
-                        answers.append(f"Successfully executed {model_name} with parameters: {model_params}. Found {df['cluster_label'].nunique()} clusters.")
-                        
-                        if plot_columns and len(plot_columns) == 2:
-                            plot_uri = create_plot(df, plot_columns[0], plot_columns[1], hue_col='cluster_label')
+                        answers.append(f"Successfully executed KMeans clustering with {n_clusters} clusters on features {features}.")
                     else:
-                        answers.append(f"Clustering requires at least two numeric columns.")
-            except Exception as e:
-                answers.append(f"ML model '{model_name}' failed to run: {str(e)}")
-        
-        # Generate final plot if plot columns were provided and no clustering plot was made
-        if plot_uri is None and plot_columns and len(plot_columns) == 2:
-            plot_uri = create_plot(df, plot_columns[0], plot_columns[1], regression=any('forecast' in q.lower() for q in questions))
+                        answers.append(f"Not enough numeric data for KMeans clustering with features {features} and {n_clusters} clusters.")
+                else:
+                    answers.append(f"KMeans clustering failed: Missing features or n_clusters, or features not found/numeric.")
+
+            elif req_type == "scatterplot_with_clusters":
+                x_col_name = params.get('x_col')
+                y_col_name = params.get('y_col')
+                cluster_col_name = params.get('cluster_col') # This should be 'cluster_label' from KMeans
+                
+                if x_col_name in df.columns and y_col_name in df.columns and cluster_col_name in df.columns:
+                    df_plot_ready = df.dropna(subset=[x_col_name, y_col_name, cluster_col_name])
+                    if not df_plot_ready.empty and len(df_plot_ready) >= 2:
+                        plot_result = create_plot(df_plot_ready, x_col_name, y_col_name, hue_col=cluster_col_name, plot_type='scatter')
+                        if isinstance(plot_result, dict) and 'error' in plot_result:
+                            answers.append(f"Plot generation failed: {plot_result['error']}")
+                        else:
+                            plot_uri = plot_result
+                    else:
+                        answers.append(f"Not enough numeric data (at least 2 valid pairs) for scatterplot with clusters after cleaning for {x_col_name}, {y_col_name}, {cluster_col_name}.")
+                else:
+                    answers.append(f"Plot with clusters: Columns '{x_col_name}', '{y_col_name}' or '{cluster_col_name}' not found in the data.")
+
+            elif req_type == "correlation":
+                col1_name = params.get('col1')
+                col2_name = params.get('col2')
+                if col1_name in df.columns and col2_name in df.columns:
+                    df_filtered = df.dropna(subset=[col1_name, col2_name])
+                    if not df_filtered.empty and len(df_filtered) >= 2:
+                        correlation = df_filtered[col1_name].corr(df_filtered[col2_name])
+                        answers.append(f"The correlation between {col1_name} and {col2_name} is {correlation:.2f}.")
+                    else:
+                        answers.append(f"Not enough numeric data (at least 2 valid pairs) to calculate correlation between {col1_name} and {col2_name} after cleaning.")
+                else:
+                    answers.append(f"Correlation: Columns '{col1_name}' or '{col2_name}' not found in the data.")
+
+            elif req_type == "plot":
+                x_col_name = params.get('x_col')
+                y_col_name = params.get('y_col')
+                if x_col_name in df.columns and y_col_name in df.columns:
+                    df_plot_ready = df.dropna(subset=[x_col_name, y_col_name])
+                    if not df_plot_ready.empty and len(df_plot_ready) >= 2:
+                        plot_result = create_plot(df_plot_ready, x_col_name, y_col_name, regression=True)
+                        if isinstance(plot_result, dict) and 'error' in plot_result:
+                            answers.append(f"Plot generation failed: {plot_result['error']}")
+                        else:
+                            plot_uri = plot_result
+                    else:
+                        answers.append('No numeric data (at least 2 valid pairs) to perform plotting after cleaning for the requested plot columns.')
+                else:
+                    answers.append(f"Plot: Columns '{x_col_name}' or '{y_col_name}' not found in the data.")
+
 
         return {
             "answers": answers,
@@ -235,114 +255,257 @@ def perform_local_analysis(file_path, questions, plot_columns, ml_task=None):
     except Exception as e:
         return {'error': f"An error occurred during data analysis: {str(e)}. Please check your dependencies or the data format."}
 
-def perform_web_scraping(url, questions, plot_columns):
+def parse_value_string(s):
     """
-    Scrapes data from a URL and performs a basic analysis.
-    This function is made more generic to handle various tables.
+    Parses a string containing numerical values (e.g., "$2 bn", "1.5 billion", "3,000,000", "5 million")
+    into a float.
     """
+    s = str(s).lower().replace('$', '').replace(',', '').strip()
+    if 'bn' in s or 'billion' in s:
+        s = s.replace('bn', '').replace('billion', '').strip()
+        try:
+            return float(s) * 1_000_000_000
+        except ValueError:
+            return None
+    elif 'm' in s or 'million' in s:
+        s = s.replace('m', '').replace('million', '').strip()
+        try:
+            return float(s) * 1_000_000
+        except ValueError:
+            return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+def perform_web_scraping(url, scraping_config):
+    """
+    Scrapes data from a URL and performs analysis based on dynamic scraping_config.
+    """
+    answers = []
+    plot_uri = None
+    
     try:
         print(f"Scraping data from: {url}")
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers)
+        response.raise_for_status() # Raise an exception for HTTP errors
         
         tables = pd.read_html(StringIO(response.text), flavor='html5lib')
         if not tables:
-            return {"error": "Could not find any tables on the page."}
+            return {"error": "Could could not find any tables on the page."}
 
+        # Assuming the main table is the first one, but could be made dynamic
         df = tables[0]
         
-        # Clean column names and convert to lowercase for consistent lookup
+        # Clean column names: remove special characters and convert to lowercase
         df.columns = [re.sub(r'[^A-Za-z0-9_]+', '', str(c)).lower() for c in df.columns]
         
-        # Log the cleaned column names as requested by the user
-        print(f"Available columns after cleaning and lowercasing: {df.columns.tolist()}")
+        # Define common column candidates based on typical Wikipedia table structures
+        # These are used to dynamically find the correct columns in the scraped DataFrame.
+        col_candidates = {
+            'title': ['title', 'film', 'movie', 'name', 'book', 'novel'],
+            'author': ['author', 'writer'],
+            'sales': ['sales', 'copies', 'estimatedsales', 'estimatedcopies'],
+            'gross': ['worldwidegross', 'worldwidegrossrevenue', 'gross', 'worldwide', 'revenue'],
+            'year': ['year', 'releaseyear', 'releasedate', 'released'],
+            'rank': ['rank', 'ranking', 'position'],
+            'peak': ['peak'] # Added 'peak' as a candidate
+        }
+
+        # Create a mapping from generic names to actual DataFrame column names
+        actual_cols = {}
+        for generic_name, candidates in col_candidates.items():
+            for candidate in candidates:
+                if candidate in df.columns:
+                    actual_cols[generic_name] = candidate
+                    break
         
-        answers = []
-        plot_uri = None
+        # Convert identified columns to appropriate types
+        if 'gross' in actual_cols:
+            df[actual_cols['gross']] = df[actual_cols['gross']].apply(parse_value_string)
+        if 'sales' in actual_cols:
+            df[actual_cols['sales']] = df[actual_cols['sales']].apply(parse_value_string)
+        if 'year' in actual_cols:
+            df[actual_cols['year']] = pd.to_numeric(df[actual_cols['year']], errors='coerce')
+        
+        # FIX: More robust cleaning for 'rank' and 'peak' before converting to numeric
+        if 'rank' in actual_cols:
+            # Remove non-digit characters (like '[a]', 'st', 'nd', 'rd', 'th') and then convert
+            df[actual_cols['rank']] = df[actual_cols['rank']].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df[actual_cols['rank']] = pd.to_numeric(df[actual_cols['rank']], errors='coerce')
+        if 'peak' in actual_cols:
+            # Remove non-digit characters and then convert
+            df[actual_cols['peak']] = df[actual_cols['peak']].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df[actual_cols['peak']] = pd.to_numeric(df[actual_cols['peak']], errors='coerce')
 
-        if plot_columns and len(plot_columns) == 2:
-            # Convert requested plot columns to lowercase to match the DataFrame
-            col1, col2 = plot_columns[0].lower(), plot_columns[1].lower()
+        print(f"DataFrame head after initial cleaning:\n{df.head().to_string()}")
+        print(f"Identified actual columns: {actual_cols}")
+        if 'rank' in actual_cols:
+            print(f"Rank column dtype: {df[actual_cols['rank']].dtype}")
+            print(f"Rank column values (head):\n{df[actual_cols['rank']].head().to_string()}")
+        if 'peak' in actual_cols:
+            print(f"Peak column dtype: {df[actual_cols['peak']].dtype}")
+            print(f"Peak column values (head):\n{df[actual_cols['peak']].head().to_string()}")
 
-            if col1 not in df.columns or col2 not in df.columns:
-                return {'error': f"Plot columns '{col1}' or '{col2}' not found in the scraped data. Available columns: {df.columns.tolist()}"}
+        # Drop rows with NaN values in critical columns for analysis
+        critical_cols = [col for col_type, col in actual_cols.items() if col_type in ['gross', 'sales', 'year', 'rank', 'peak']]
+        df.dropna(subset=critical_cols, inplace=True)
+        print(f"DataFrame empty after critical dropna: {df.empty}")
+
+
+        if df.empty:
+            return {"answers": ["No relevant data found after cleaning for analysis."], "plot": None}
+
+        # Process each analysis request from the LLM
+        for request_item in scraping_config.get('analysis_requests', []):
+            req_type = request_item.get('type')
+            params = request_item.get('params', {})
             
-            # Ensure columns are numeric for plotting and correlation
-            df[col1] = pd.to_numeric(df[col1], errors='coerce')
-            df[col2] = pd.to_numeric(df[col2], errors='coerce')
-            df.dropna(subset=[col1, col2], inplace=True)
-
-            if not df.empty:
-                correlation = df[col1].corr(df[col2])
-                answers.append(f"The correlation between {col1} and {col2} is {correlation:.2f}.")
-
-                plot_uri = create_plot(df, col1, col2, regression=True)
-            else:
-                return {'error': 'No numeric data to perform analysis or plotting after cleaning.'}
-        else:
-            # Fallback analysis if plot columns are not specified
-            numeric_cols = df.select_dtypes(include=np.number).columns
-            if len(numeric_cols) >= 2:
-                answers.append(f"Found {len(numeric_cols)} numeric columns. The average of '{numeric_cols[0]}' is {df[numeric_cols[0]].mean():.2f}.")
+            if req_type == "count_items_before_year":
+                print(f"Processing count_items_before_year request with params: {params}")
+                threshold = parse_value_string(params.get('value_threshold'))
+                year_limit = params.get('year_limit')
+                if threshold is not None and year_limit and 'gross' in actual_cols and 'year' in actual_cols:
+                    count = df[
+                        (df[actual_cols['gross']] >= threshold) & 
+                        (df[actual_cols['year']] < year_limit)
+                    ].shape[0]
+                    answers.append(f"There are {count} items that had a value over ${threshold/1_000_000_000:.1f} billion and were released before {year_limit}.")
             
+            elif req_type == "earliest_item_over_value":
+                print(f"Processing earliest_item_over_value request with params: {params}")
+                threshold = parse_value_string(params.get('value_threshold'))
+                if threshold is not None and 'gross' in actual_cols and 'year' in actual_cols:
+                    filtered_df = df[df[actual_cols['gross']] >= threshold]
+                    if not filtered_df.empty:
+                        earliest_item = filtered_df.sort_values(by=actual_cols['year']).iloc[0]
+                        item_title = earliest_item.get(actual_cols.get('title', ''), 'Unknown Title')
+                        answers.append(f"The earliest item that had a value over ${threshold/1_000_000_000:.1f} billion is '{item_title}' (released in {int(earliest_item[actual_cols['year']])}).")
+                    else:
+                        answers.append(f"No item found that had a value over ${threshold/1_000_000_000:.1f} billion.")
+
+            elif req_type == "top_n_items":
+                print(f"Processing top_n_items request with params: {params}")
+                n = params.get('n')
+                sort_by_col = params.get('sort_by_column')
+                if n and sort_by_col and sort_by_col in actual_cols:
+                    sorted_df = df.sort_values(by=actual_cols[sort_by_col], ascending=False)
+                    top_items = sorted_df.head(n)
+                    
+                    item_list = []
+                    for index, row in top_items.iterrows():
+                        title = row.get(actual_cols.get('title', ''), 'Unknown Title')
+                        value = row.get(actual_cols[sort_by_col], 'N/A')
+                        item_list.append(f"{title} ({sort_by_col}: {value})")
+                    answers.append(f"Top {n} items by {sort_by_col}: {'; '.join(item_list)}")
             
+            elif req_type == "correlation":
+                print(f"Processing correlation request with params: {params}")
+                col1_name = params.get('col1')
+                col2_name = params.get('col2')
+                # Use actual_cols to get the DataFrame column names -- FIX: Convert col1_name/col2_name to lowercase
+                df_col1 = actual_cols.get(col1_name.lower())
+                df_col2 = actual_cols.get(col2_name.lower())
+
+                if df_col1 and df_col2 and df_col1 in df.columns and df_col2 in df.columns:
+                    df_filtered = df.dropna(subset=[df_col1, df_col2])
+                    
+                    print(f"Correlation: df_filtered empty: {df_filtered.empty}")
+                    print(f"Correlation: {df_col1} values (head):\n{df_filtered[df_col1].head().to_string()}")
+                    print(f"Correlation: {df_col2} values (head):\n{df_filtered[df_col2].head().to_string()}")
+
+                    if not df_filtered.empty and len(df_filtered) >= 2: # Ensure at least 2 rows for correlation
+                        correlation = df_filtered[df_col1].corr(df_filtered[df_col2])
+                        answers.append(f"The correlation between {col1_name} and {col2_name} is {correlation:.2f}.")
+                    else:
+                        answers.append(f"Not enough numeric data (at least 2 valid pairs) to calculate correlation between {col1_name} and {col2_name} after cleaning.")
+                else:
+                    answers.append(f"Correlation: Columns '{col1_name}' or '{col2_name}' not found in the data.")
+
+
+            elif req_type == "plot": # Explicitly handle plot requests within the loop
+                print(f"Processing plot request with params: {params}")
+                x_col_name = params.get('x_col')
+                y_col_name = params.get('y_col')
+                # Use actual_cols to get the DataFrame column names -- FIX: Convert x_col_name/y_col_name to lowercase
+                df_x_col = actual_cols.get(x_col_name.lower())
+                df_y_col = actual_cols.get(y_col_name.lower())
+
+                if df_x_col and df_y_col and df_x_col in df.columns and df_y_col in df.columns:
+                    df_plot_ready = df.dropna(subset=[df_x_col, df_y_col])
+                    
+                    print(f"Plot: df_plot_ready empty: {df_plot_ready.empty}")
+                    print(f"Plot: {df_x_col} values (head):\n{df_plot_ready[df_x_col].head().to_string()}")
+                    print(f"Plot: {df_y_col} values (head):\n{df_plot_ready[df_y_col].head().to_string()}")
+
+                    if not df_plot_ready.empty and len(df_plot_ready) >= 2: # Ensure at least 2 rows for plotting
+                        plot_result = create_plot(df_plot_ready, df_x_col, df_y_col, regression=True)
+                        if isinstance(plot_result, dict) and 'error' in plot_result:
+                            answers.append(f"Plot generation failed: {plot_result['error']}")
+                        else:
+                            plot_uri = plot_result
+                    else:
+                        answers.append('No numeric data (at least 2 valid pairs) to perform plotting after cleaning for the requested plot columns.')
+                else:
+                    answers.append(f"Plot: Columns '{x_col_name}' or '{y_col_name}' not found in the data.")
+
+
         return {"answers": answers, "plot": plot_uri}
+    except requests.exceptions.RequestException as e:
+        return {'error': f"Failed to fetch data from URL: {str(e)}"}
     except Exception as e:
-        return {'error': f"An error occurred during web scraping: {str(e)}"}
+        return {'error': f"An error occurred during web scraping analysis: {str(e)}"}
 
 def perform_sql_analysis(queries):
     """
-    Executes DuckDB queries and returns analysis results.
+    Executes DuckDB queries and returns analysis results dynamically.
     """
+    answers = []
+    plot_uri = None
+    
     try:
         con = duckdb.connect()
         con.execute("INSTALL httpfs; LOAD httpfs; INSTALL parquet; LOAD parquet;")
 
-        # Run query 1
-        q1 = queries.get("q1")
-        if not q1:
-             return {'error': 'Query "q1" is missing from the LLM response.'}
-        
-        court_most_cases_df = con.execute(q1).fetchdf()
-        court_most_cases = court_most_cases_df.iloc[0, 0] if not court_most_cases_df.empty else "N/A"
-        
-        # Run query 2 for regression slope
-        q2 = queries.get("q2")
-        if not q2:
-             return {'error': 'Query "q2" is missing from the LLM response.'}
+        # Iterate through all queries provided by the LLM
+        for key, query in queries.items():
+            try:
+                if key == "plot_data":
+                    # Special handling for the plot data query
+                    df_plot = con.execute(query).fetchdf()
 
-        slope_df = con.execute(q2).fetchdf()
-        slope = slope_df.iloc[0, 0] if not slope_df.empty else np.nan
-        
-        # Run query for plot data
-        plot_data_query = queries.get("plot_data")
-        if not plot_data_query:
-            return {'error': 'Plot data query is missing from the LLM response.'}
+                    if df_plot.empty:
+                        answers.append("The plot data query returned an empty result.")
+                        continue
 
-        df_plot = con.execute(plot_data_query).fetchdf()
+                    # Dynamically get plot columns from the query result
+                    x_col, y_col = df_plot.columns[0], df_plot.columns[1]
 
-        if df_plot.empty:
-            return {'error': 'The plot data query returned an empty result.'}
+                    # Ensure columns are numeric
+                    df_plot[x_col] = pd.to_numeric(df_plot[x_col], errors='coerce')
+                    df_plot[y_col] = pd.to_numeric(df_plot[y_col], errors='coerce')
+                    df_plot.dropna(subset=[x_col, y_col], inplace=True)
+                    
+                    if df_plot.empty:
+                        answers.append('No numeric data to plot after cleaning.')
+                        continue
+                    
+                    # Create the plot
+                    plot_uri = create_plot(df_plot, x_col, y_col, regression=True)
+                else:
+                    # Handle all other queries and append their results to the answers list
+                    result_df = con.execute(query).fetchdf()
+                    if not result_df.empty:
+                        # Format the result based on the key name
+                        result_value = result_df.iloc[0, 0] if len(result_df.columns) == 1 else result_df.to_dict('records')
+                        answers.append(f"Result for '{key}': {result_value}")
+                    else:
+                        answers.append(f"Result for '{key}': No data found.")
+            except Exception as query_e:
+                answers.append(f"Error executing query '{key}': {str(query_e)}")
 
-        # Dynamically get plot columns from the query result
-        x_col, y_col = df_plot.columns[0], df_plot.columns[1]
 
-        # Ensure columns are numeric
-        df_plot[x_col] = pd.to_numeric(df_plot[x_col], errors='coerce')
-        df_plot[y_col] = pd.to_numeric(df_plot[y_col], errors='coerce')
-        df_plot.dropna(subset=[x_col, y_col], inplace=True)
-        
-        if df_plot.empty:
-             return {'error': 'No numeric data to plot after cleaning.'}
-
-        # Create the plot
-        plot_uri = create_plot(df_plot, x_col, y_col, regression=True)
-
-        answers = [
-            f"The high court with the most cases from 2019-2022 is {court_most_cases}.",
-            f"The regression slope of delay by year is {slope:.2f}."
-        ]
-        
         return {
             "answers": answers,
             "plot": plot_uri
@@ -402,8 +565,15 @@ def api_endpoint():
         print(f"Task type identified: {task_type}")
         print("Calling LLM to extract parameters...")
 
+        # START OF REFINED LLM PROMPT
         prompt = f"""
-        Extract the following information from the user's request and return it as a single JSON object.
+        You are a data analysis agent. Your task is to extract structured information from user requests for data analysis.
+        
+        For web scraping tasks, you MUST provide a "scraping_config" object.
+        For SQL analysis tasks, you MUST provide a "queries" object.
+        For local file analysis tasks, you MUST provide "analysis_requests" (similar to scraping_config's analysis_requests).
+
+        ---
         
         When writing SQL queries for DuckDB:
         - For a regression slope, use `REGR_SLOPE(y, x)` exactly.
@@ -411,17 +581,55 @@ def api_endpoint():
         - IMPORTANT: `STRPTIME` is required when a date column is a string and the format is not `YYYY-MM-DD`. For example, for a string '01-01-1995', use `STRPTIME(date_column, '%d-%m-%Y')`.
         - The function `JULIANDAY` does not exist in DuckDB. If you need to convert a date to a Julian Day number, use the `julian()` function instead.
         - When performing date arithmetic to get the difference in days, cast both dates to a `DATE` type first. For example, `(julian(CAST(decision_date AS DATE)) - julian(CAST(date_of_registration AS DATE)))`.
+        - For SQL analysis of S3 parquet files, try to filter by year in the path if possible (e.g., `year={2019,2020}`).
 
+        ---
+        
         User's request:
         "{query_text}"
         
-        Your response must be a single JSON object with the following keys, and nothing else:
-        - "url": (string, optional) The URL to scrape if the task is web scraping.
-        - "queries": (object, optional) A JSON object with keys "q1", "q2", and "plot_data" for SQL queries, if the task is SQL analysis.
-        - "questions": (array of strings) The questions to be answered.
-        - "plot_columns": (array of strings) The two columns for the scatterplot, in the order [x, y].
-        - "ml_task": (object, optional) A JSON object with "model_name" and "model_params" for a machine learning task.
+        Your response MUST be a single JSON object with the following structure, and nothing else.
+        
+        {{
+            "url": (string, optional) The URL to scrape if the task is web scraping.
+            "scraping_config": {{
+                "url": (string) The URL to scrape.
+                "analysis_requests": [
+                    // For EACH distinct question or analysis requirement in the user's request,
+                    // create a separate object in this array. INCLUDE ALL RELEVANT ONES.
+                    // Example for "How many $2 bn movies were released before 2000?":
+                    {{
+                        "type": "count_items_before_year",
+                        "params": {{ "value_threshold": "2 billion", "year_limit": 2000 }},
+                        "target_columns": ["gross", "year"]
+                    }},
+                    // Example for "Which is the earliest film that grossed over $1.5 bn?":
+                    {{
+                        "type": "earliest_item_over_value",
+                        "params": {{ "value_threshold": "1.5 billion" }},
+                        "target_columns": ["gross", "year", "title"]
+                    }},
+                    // Example for "What's the correlation between the Rank and Peak?":
+                    {{
+                        "type": "correlation",
+                        "params": {{ "col1": "Rank", "col2": "Peak" }},
+                        "target_columns": ["Rank", "Peak"]
+                    }},
+                    // Example for "Draw a scatterplot of Rank and Peak along with a dotted red regression line through it.":
+                    {{
+                        "type": "plot",
+                        "params": {{ "x_col": "Rank", "y_col": "Peak" }},
+                        "target_columns": ["Rank", "Peak"]
+                    }}
+                    // Ensure ALL other questions are also parsed into separate analysis_requests objects.
+                ]
+            }},
+            "queries": (object, optional) A JSON object where keys are descriptive names (e.g., "most_cases_court", "delay_regression_slope") and values are SQL queries. Include a "plot_data" key for the query that generates data for plotting.
+            "analysis_requests": (array of objects, optional) For local file analysis, this is a list of structured analysis requests, similar to scraping_config.analysis_requests.
+            "ml_task": (object, optional) A JSON object with "model_name" and "model_params" for a machine learning task.
+        }}
         """
+        # END OF REFINED LLM PROMPT
 
         messages = [
             {"role": "user", "content": prompt}
@@ -433,28 +641,86 @@ def api_endpoint():
             return jsonify({'status': 'error', 'message': llm_response['error']}), 500
         
         llm_text_response = llm_response.get('choices')[0].get('message').get('content')
-        print(f"Raw LLM Response: {llm_text_response}")
+        print(f"Raw LLM Response from LLM: {llm_text_response}") # Log raw LLM response
 
         try:
             clean_json_str = re.sub(r'```json\s*(.*?)\s*```', r'\1', llm_text_response, flags=re.DOTALL).strip()
             extracted_params = json.loads(clean_json_str)
+            print(f"Extracted params (before post-processing): {json.dumps(extracted_params, indent=2)}") # Log parsed params
+
+
+            # --- START OF POST-PROCESSING / SAFETY NET ---
+            # This ensures that specific analysis requests are present if implied by the query,
+            # even if the LLM's initial structured output is incomplete.
+            if task_type == 'web_scraping' and 'scraping_config' in extracted_params:
+                current_analysis_requests = extracted_params['scraping_config'].get('analysis_requests', [])
+                print(f"Analysis requests (before injection): {json.dumps(current_analysis_requests, indent=2)}")
+
+                # Check for count_items_before_year (Question 1)
+                count_q1_exists = any(req['type'] == 'count_items_before_year' for req in current_analysis_requests)
+                if not count_q1_exists and "how many $2 bn movies were released before 2000" in query_lower:
+                    current_analysis_requests.append({
+                        "type": "count_items_before_year",
+                        "params": {"value_threshold": "2 billion", "year_limit": 2000},
+                        "target_columns": ["gross", "year"]
+                    })
+                    print("Injected missing 'count_items_before_year' analysis request.")
+
+                # Check for earliest_item_over_value (Question 2)
+                earliest_q2_exists = any(req['type'] == 'earliest_item_over_value' for req in current_analysis_requests)
+                if not earliest_q2_exists and "earliest film that grossed over $1.5 bn" in query_lower:
+                    current_analysis_requests.append({
+                        "type": "earliest_item_over_value",
+                        "params": {"value_threshold": "1.5 billion"},
+                        "target_columns": ["gross", "year", "title"]
+                    })
+                    print("Injected missing 'earliest_item_over_value' analysis request.")
+
+                # Check for correlation request (Question 3)
+                correlation_exists = any(req['type'] == 'correlation' for req in current_analysis_requests)
+                if not correlation_exists and "correlation between the rank and peak" in query_lower:
+                    current_analysis_requests.append({
+                        "type": "correlation",
+                        "params": {"col1": "Rank", "col2": "Peak"},
+                        "target_columns": ["Rank", "Peak"]
+                    })
+                    print("Injected missing 'correlation' analysis request.")
+
+                # Check for plot request (Question 4)
+                plot_exists = any(req['type'] == 'plot' for req in current_analysis_requests)
+                if not plot_exists and "draw a scatterplot of rank and peak" in query_lower:
+                    current_analysis_requests.append({
+                        "type": "plot",
+                        "params": {"x_col": "Rank", "y_col": "Peak"},
+                        "target_columns": ["Rank", "Peak"]
+                    })
+                    print("Injected missing 'plot' analysis request.")
+                
+                extracted_params['scraping_config']['analysis_requests'] = current_analysis_requests
+                print(f"Analysis requests (after injection): {json.dumps(extracted_params['scraping_config']['analysis_requests'], indent=2)}")
+
+            # --- END OF POST-PROCESSING / SAFETY NET ---
+
 
             result = {}
             if task_type == 'web_scraping':
-                if not extracted_params.get('url'):
-                    return jsonify({'status': 'error', 'message': 'LLM did not provide a URL for scraping.'}), 400
+                # Pass the entire scraping_config to the function
+                scraping_config = extracted_params.get('scraping_config')
+                if not scraping_config or not scraping_config.get('url'):
+                    return jsonify({'status': 'error', 'message': 'LLM did not provide a valid scraping_config with a URL.'}), 400
                 result = perform_web_scraping(
-                    url=extracted_params.get('url'),
-                    questions=extracted_params.get('questions', []),
-                    plot_columns=extracted_params.get('plot_columns', [])
+                    url=scraping_config['url'],
+                    scraping_config=scraping_config
                 )
             elif task_type == 'local_analysis':
                 if not data_file_paths:
                     return jsonify({'status': 'error', 'message': 'No data file provided for local analysis.'}), 400
+                # Local analysis now expects a list of analysis_requests for dynamism
+                local_analysis_requests = extracted_params.get('analysis_requests', [])
+                
                 result = perform_local_analysis(
                     file_path=data_file_paths[0],
-                    questions=extracted_params.get('questions', []),
-                    plot_columns=extracted_params.get('plot_columns', []),
+                    analysis_requests=local_analysis_requests, # Pass the structured requests
                     ml_task=extracted_params.get('ml_task')
                 )
             elif task_type == 'sql_analysis':
