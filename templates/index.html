@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Analyst Agent Client</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter font from Google Fonts -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+    <!-- GSAP for advanced animations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    <style>
+        :root {
+            --primary-light: #6366F1;
+            --primary-dark: #4F46E5;
+            --bg-dark: #0A0A0A;
+            --bg-card: #1a1a1d;
+            --border-color: #27272A;
+            --text-color: #EAEAEA;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-color);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            margin: 0;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Galaxy background gradient */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(45deg, #0f0f1c, #0a0a0a, #0f0f1c);
+            background-size: 300% 300%;
+            animation: gradient-animation 25s ease infinite;
+            z-index: -1;
+        }
+
+        @keyframes gradient-animation {
+            0% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+
+            100% {
+                background-position: 0% 50%;
+            }
+        }
+
+        /* Subtle fade-in animation for the main content */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-in-on-load {
+            animation: fadeIn 1s ease-out forwards;
+        }
+
+        /* Custom file input styling */
+        .custom-file-input::-webkit-file-upload-button {
+            visibility: hidden;
+        }
+
+        .custom-file-input::before {
+            content: 'Select Files';
+            display: inline-block;
+            background: linear-gradient(to right, var(--primary-dark), var(--primary-light));
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            cursor: pointer;
+            font-weight: 600;
+            outline: none;
+            transition: all 0.3s ease-in-out;
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.4);
+        }
+
+        .custom-file-input:hover::before {
+            background: linear-gradient(to right, var(--primary-light), var(--primary-dark));
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(79, 70, 229, 0.6);
+        }
+
+        .custom-file-input:active::before {
+            transform: translateY(1px);
+        }
+
+        /* Submit button animation and glow */
+        .submit-button {
+            background: linear-gradient(to right, var(--primary-dark), var(--primary-light));
+            color: white;
+            transition: all 0.3s ease-in-out;
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.4);
+        }
+
+        .submit-button:hover {
+            transform: translateY(-2px) scale(1.02);
+            box-shadow: 0 6px 20px rgba(79, 70, 229, 0.6);
+        }
+
+        .submit-button:active {
+            transform: translateY(1px);
+        }
+
+        /* Message box styling */
+        #message-box {
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            text-align: center;
+            font-weight: 500;
+        }
+
+        .message-success {
+            background-color: #D1FAE5;
+            color: #065F46;
+        }
+
+        .message-error {
+            background-color: #FEE2E2;
+            color: #991B1B;
+        }
+
+        .message-info {
+            background-color: #DBEAFE;
+            color: #1E40AF;
+        }
+
+        /* Rainbow text animation styling */
+        .rainbow-text {
+            background: linear-gradient(to right, #FF0000, #FF7F00, #FFFF00, #00FF00, #0000FF, #4B0082, #9400D3);
+            background-size: 400% auto;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: rainbow-animation 15s linear infinite;
+        }
+
+        @keyframes rainbow-animation {
+            0% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+
+            100% {
+                background-position: 0% 50%;
+            }
+        }
+
+        /* Galaxy stars styling */
+        .star-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .star {
+            position: absolute;
+            background-color: white;
+            border-radius: 50%;
+        }
+
+        /* New sequential icon styles */
+        .sequential-icon-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+
+        .sequential-icon {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%) scale(0.5);
+            width: 80px;
+            height: 80px;
+            left: -10%;
+            fill: #4B5563;
+            opacity: 0;
+            stroke-width: 2;
+        }
+
+        /* New styling for the plot image to make it visible */
+        .analysis-plot {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin-top: 1rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .json-pre {
+            background-color: #1a1a1d;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            overflow-x: auto;
+            max-height: 10rem;
+            margin-top: 1rem;
+            white-space: pre-wrap;
+        }
+
+        /* Styles for the footer text */
+        .footer-text {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #FFFFFF;
+            font-weight: 500;
+            font-size: 1rem;
+            z-index: 20;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-gray-200">
+    <div class="star-container"></div>
+    <div
+        class="container mx-auto p-8 lg:p-16 min-h-screen flex flex-col items-center justify-center fade-in-on-load relative">
+        <!-- Sequential icons container -->
+        <div class="sequential-icon-container">
+            <!-- Source Icon (Magnifying Glass) -->
+            <svg id="seq-icon-source" class="sequential-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none"
+                xmlns="http://www.w3.org/2000/svg">
+                <path
+                    d="M11 19C15.4183 19 19 15.4183 19 11C19 6.58172 15.4183 3 11 3C6.58172 3 3 6.58172 3 11C3 15.4183 6.58172 19 11 19Z"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M21 21L16.65 16.65" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <!-- Prepare Icon (Gear) -->
+            <svg id="seq-icon-prepare" class="sequential-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none"
+                xmlns="http://www.w3.org/2000/svg">
+                <path
+                    d="M12 21C16.9706 21 21 16.9706 21 12C21 7.02944 16.9706 3 12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21Z"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path
+                    d="M12 16C14.2091 16 16 14.2091 16 12C16 9.79086 14.2091 8 12 8C9.79086 8 8 9.79086 8 12C8 14.2091 9.79086 16 12 16Z"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M12 21V19" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M12 5V3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M19 12H21" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M3 12H5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M17.6569 17.6569L19.071 19.0711" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                <path d="M4.92893 4.92893L6.34315 6.34315" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                <path d="M17.6569 6.34315L19.071 4.92893" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                <path d="M4.92893 19.0711L6.34315 17.6569" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" />
+            </svg>
+            <!-- Analyze Icon (Bar Chart) -->
+            <svg id="seq-icon-analyze" class="sequential-icon" viewBox="0 0 24 24" stroke="currentColor" fill="none"
+                xmlns="http://www.w3.org/2000/svg">
+                <path d="M18 20V10" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M12 20V4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M6 20V14" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M4 20H20" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </div>
+
+        <main class="w-full max-w-4xl p-8 bg-card rounded-2xl shadow-2xl flex flex-col md:flex-row gap-8 relative z-10">
+            <!-- Left section (Resume-like profile) -->
+            <div
+                class="md:w-1/2 p-6 md:p-8 bg-card rounded-xl shadow-inner flex flex-col items-center text-center border border-border-color">
+                <div
+                    class="w-24 h-24 rounded-full bg-indigo-600 flex items-center justify-center text-3xl font-bold text-white mb-4">
+                    DA
+                </div>
+                <h1 class="text-3xl font-bold mb-2 rainbow-text">Data Analyst Agent</h1>
+                <p class="text-gray-400 leading-relaxed text-sm">
+                    This is a powerful, AI-driven data analysis agent designed to source, prepare, analyze, and
+                    visualize any data. Use the form on the right to submit your analysis tasks, including text-based
+                    queries and data files in various formats.
+                </p>
+                <div class="mt-6 w-full text-left">
+                    <h2 class="text-lg font-semibold text-white mb-2">Key Features</h2>
+                    <ul class="list-disc list-inside space-y-1 text-gray-400 text-sm">
+                        <li>Handles multiple file types (.txt, .csv, .parquet, .xls)</li>
+                        <li>Supports natural language questions</li>
+                        <li>Provides JSON-formatted answers and visualizations</li>
+                        <li>High-performance data processing</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Right section (File uploader form) -->
+            <div class="md:w-1/2 p-6 md:p-8 bg-card rounded-xl shadow-inner flex flex-col border border-border-color">
+                <h2 class="text-2xl font-bold text-white mb-6">Submit Your Analysis Task</h2>
+                <form id="upload-form" class="space-y-4 flex-grow flex flex-col">
+                    <div>
+                        <label for="files-to-upload" class="block text-sm font-medium text-gray-300">
+                            Select up to 10 files (e.g., query text, CSV, Excel, or images)
+                        </label>
+                        <input type="file" id="files-to-upload" name="files-to-upload" multiple
+                            accept=".txt, .csv, .parquet, .xls, .xlsx, .jpg, .jpeg, .png, .gif"
+                            class="mt-1 block w-full text-sm text-gray-500 custom-file-input" />
+                    </div>
+
+                    <div id="file-list" class="text-sm text-gray-400 mt-2 space-y-1">
+                        <!-- File names will be displayed here -->
+                    </div>
+
+                    <button type="submit" class="w-full py-3 px-6 rounded-full font-semibold text-white submit-button">
+                        Run Analysis
+                    </button>
+
+                    <div id="status-message-box" class="flex-grow flex items-center justify-center p-4 rounded-xl mt-4">
+                        <!-- Status and loading messages will be displayed here -->
+                    </div>
+                </form>
+            </div>
+        </main>
+
+        <!-- New Component for Analysis Results -->
+        <div id="results-component"
+            class="container mx-auto mt-8 p-8 max-w-4xl bg-card rounded-2xl shadow-2xl relative z-10 hidden">
+            <div class="relative bg-gray-800 p-6 rounded-lg border border-gray-700 space-y-4">
+                <div class="flex justify-between items-center">
+                    <p class="font-bold text-xl text-indigo-400">Analysis Summary</p>
+                    <button id="copy-json-btn"
+                        class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm rounded-full transition-all duration-200">Copy
+                        JSON</button>
+                </div>
+                <div id="analysis-summary" class="space-y-2 text-white text-lg">
+                    <!-- Summary answers will be rendered here -->
+                </div>
+            </div>
+
+            <div id="plot-container" class="mt-6 bg-gray-800 p-6 rounded-lg border border-gray-700 hidden">
+                <p class="font-bold text-xl text-indigo-400">Visualization</p>
+                <img id="analysis-plot" alt="Data Plot" class="w-full h-auto mt-4 rounded-lg" />
+            </div>
+
+            <div id="json-container" class="mt-6 bg-gray-800 p-6 rounded-lg border border-gray-700 hidden">
+                <p class="font-bold text-xl text-indigo-400">Raw JSON Response</p>
+                <pre id="json-output"
+                    class="text-xs overflow-auto h-32 bg-gray-900 p-2 rounded-lg text-gray-400 whitespace-pre-wrap"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- New div for the footer text -->
+    <div id="footer-text" class="footer-text">
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const form = document.getElementById('upload-form');
+            const fileInput = document.getElementById('files-to-upload');
+            const fileList = document.getElementById('file-list');
+            const statusMessageBox = document.getElementById('status-message-box');
+            const submitButton = form.querySelector('button[type="submit"]');
+
+            const resultsComponent = document.getElementById('results-component');
+            const analysisSummaryDiv = document.getElementById('analysis-summary');
+            const plotContainer = document.getElementById('plot-container');
+            const analysisPlot = document.getElementById('analysis-plot');
+            const jsonOutput = document.getElementById('json-output');
+            const jsonContainer = document.getElementById('json-container');
+            const copyJsonBtn = document.getElementById('copy-json-btn');
+
+            const displayStatusMessage = (message, type) => {
+                statusMessageBox.innerHTML = '';
+                statusMessageBox.classList.remove('message-success', 'message-error', 'message-info');
+                statusMessageBox.classList.add(`message-${type}`);
+
+                const messageContent = document.createElement('div');
+                messageContent.className = 'p-4 rounded-xl';
+                messageContent.innerHTML = `<p class="font-bold text-lg mb-2">Status: ${message}</p>`;
+
+                statusMessageBox.appendChild(messageContent);
+                resultsComponent.classList.add('hidden');
+            };
+
+            const displayAnalysisResult = (result) => {
+                resultsComponent.classList.remove('hidden');
+                statusMessageBox.innerHTML = '';
+                statusMessageBox.classList.remove('message-success', 'message-error', 'message-info');
+
+                // Clear previous results
+                analysisSummaryDiv.innerHTML = '';
+                plotContainer.classList.add('hidden');
+                jsonContainer.classList.add('hidden');
+
+                const answers = result.slice(0, -1);
+                const plotDataUri = result.slice(-1)[0];
+                const rawJson = result; // The entire array is the raw JSON
+
+                // Render answers
+                if (answers && answers.length > 0) {
+                    analysisSummaryDiv.innerHTML = `
+                        <ul class="list-disc list-inside space-y-2 text-white text-lg">
+                            ${answers.map(answer => `<li>${answer}</li>`).join('')}
+                        </ul>
+                    `;
+                }
+
+                if (plotDataUri) {
+                    analysisPlot.src = plotDataUri;
+                    plotContainer.classList.remove('hidden');
+                }
+
+                // Prepare the raw JSON to display
+                jsonOutput.textContent = JSON.stringify(rawJson, null, 2);
+                jsonContainer.classList.remove('hidden');
+            };
+
+            fileInput.addEventListener('change', () => {
+                const files = fileInput.files;
+                if (files.length > 10) {
+                    displayStatusMessage(`Warning: You can only upload a maximum of 10 files. You selected ${files.length}.`, 'error');
+                    fileInput.value = '';
+                    fileList.innerHTML = '';
+                    submitButton.disabled = true;
+                } else if (files.length > 0) {
+                    submitButton.disabled = false;
+                    let fileNames = [];
+                    for (const file of files) {
+                        fileNames.push(file.name);
+                    }
+                    fileList.innerHTML = `<p class="font-bold">Files to be uploaded:</p><ul>${fileNames.map(name => `<li>- ${name}</li>`).join('')}</ul>`;
+                    displayStatusMessage(`Ready to upload ${files.length} file(s).`, 'info');
+                } else {
+                    submitButton.disabled = false;
+                    fileList.innerHTML = '';
+                    displayStatusMessage('', 'info');
+                }
+            });
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const files = fileInput.files;
+                if (files.length === 0) {
+                    displayStatusMessage('Please select at least one file to upload.', 'error');
+                    return;
+                }
+                const apiUrl = window.location.origin + '/api';
+                const formData = new FormData();
+                for (let i = 0; i < files.length; i++) {
+                    formData.append(`uploaded_files`, files[i]);
+                }
+                displayStatusMessage('Uploading files and calling LLM...', 'info');
+                submitButton.disabled = true;
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ message: 'Failed to parse error response.' }));
+                        throw new Error(errorData.message || `HTTP error! Status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+
+                    // The server now returns the JSON array directly
+                    // So we can pass it directly to the display function
+                    if (Array.isArray(result)) {
+                        displayAnalysisResult(result);
+                    } else if (result.status === 'success') {
+                        displayAnalysisResult(result.result);
+                    } else {
+                        displayStatusMessage(result.message, 'error');
+                    }
+                } catch (error) {
+                    console.error('Upload Error:', error);
+                    displayStatusMessage(`Upload failed: ${error.message}`, 'error');
+                } finally {
+                    submitButton.disabled = false;
+                }
+            });
+
+            copyJsonBtn.addEventListener('click', () => {
+                const jsonText = jsonOutput.textContent;
+                const tempInput = document.createElement('textarea');
+                tempInput.value = jsonText;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                document.execCommand('copy');
+                document.body.removeChild(tempInput);
+                alert('JSON copied to clipboard!');
+            });
+
+            const animateSequentialIcons = () => {
+                const iconSource = document.getElementById('seq-icon-source');
+                const iconPrepare = document.getElementById('seq-icon-prepare');
+                const iconAnalyze = document.getElementById('seq-icon-analyze');
+
+                const tlMaster = gsap.timeline({ repeat: -1 });
+                const animateIcon = (icon, color) => {
+                    const tl = gsap.timeline();
+                    tl.fromTo(icon, { x: '-100vw', opacity: 0, scale: 0.8 }, {
+                        x: '0vw',
+                        opacity: 0.2,
+                        scale: 1,
+                        duration: 3,
+                        ease: "power1.out",
+                        fill: color
+                    })
+                        .to(icon, {
+                            x: '100vw',
+                            opacity: 0,
+                            scale: 0.8,
+                            duration: 3,
+                            ease: "power1.in",
+                            fill: '#4B5563'
+                        }, "+=1");
+                    return tl;
+                };
+
+                tlMaster.add(animateIcon(iconSource, '#93C5FD'), 0);
+                tlMaster.add(animateIcon(iconPrepare, '#A78BFA'), 5);
+                tlMaster.add(animateIcon(iconAnalyze, '#34D399'), 10);
+            };
+
+            const starContainer = document.querySelector('.star-container');
+            const numStars = 300;
+            const starColors = ['#FFFFFF', '#FFD700', '#ADD8E6'];
+
+            for (let i = 0; i < numStars; i++) {
+                const star = document.createElement('div');
+                star.className = 'star';
+                const size = gsap.utils.random(1, 3);
+                star.style.width = size + 'px';
+                star.style.height = size + 'px';
+                star.style.left = gsap.utils.random(0, 100) + 'vw';
+                star.style.top = gsap.utils.random(0, 100) + 'vh';
+                star.style.backgroundColor = starColors[Math.floor(Math.random() * starColors.length)];
+                starContainer.appendChild(star);
+
+                gsap.to(star, {
+                    x: gsap.utils.random(-200, 200),
+                    y: gsap.utils.random(-200, 200),
+                    scale: gsap.utils.random(0.5, 1.5),
+                    opacity: gsap.utils.random(0.2, 0.8),
+                    duration: gsap.utils.random(10, 30),
+                    ease: "power1.inOut",
+                    repeat: -1,
+                    yoyo: true,
+                    delay: gsap.utils.random(0, 5)
+                });
+            }
+
+            // New GSAP animation for the footer text
+            const animateFooterText = () => {
+                const footerText = document.getElementById('footer-text');
+                const textContent = "Made with ❤️ by Sanjoli Vashisth";
+                footerText.textContent = ''; // Clear the text to animate each letter
+
+                const letters = [];
+                for (let i = 0; i < textContent.length; i++) {
+                    const char = textContent[i];
+                    if (char === ' ') {
+                        // For spaces, add a non-breaking space to ensure it's rendered
+                        const spaceSpan = document.createElement('span');
+                        spaceSpan.innerHTML = '&nbsp;';
+                        footerText.appendChild(spaceSpan);
+                        letters.push(spaceSpan);
+                    } else {
+                        const span = document.createElement('span');
+                        span.textContent = char;
+                        span.style.display = 'inline-block';
+                        span.style.opacity = 1; // Make it visible initially
+                        span.style.textShadow = 'none'; // No shadow initially
+                        footerText.appendChild(span);
+                        letters.push(span);
+                    }
+                }
+
+                // Create the repeating GSAP timeline
+                const tl = gsap.timeline({
+                    repeat: -1, // Repeat indefinitely
+                    repeatDelay: 55 // Pause for 55 seconds between each loop
+                });
+
+                // Animate the text glowing
+                tl.to(letters, {
+                    opacity: 1,
+                    textShadow: '0 0 5px #FFF, 0 0 10px #FFF, 0 0 15px #FFF', // A beautiful glow
+                    duration: 1,
+                    ease: 'power2.out'
+                });
+
+                // Animate the text fading into points
+                tl.to(letters, {
+                    opacity: 0,
+                    scale: 0.1,
+                    textShadow: 'none',
+                    stagger: {
+                        each: 0.05,
+                        from: 'random'
+                    },
+                    duration: 1,
+                    ease: 'power2.in'
+                }, '+=2'); // Wait for 2 seconds after the glow before fading out
+
+                // Animate the text fading back in
+                tl.to(letters, {
+                    opacity: 1,
+                    scale: 1,
+                    stagger: {
+                        each: 0.05,
+                        from: 'random'
+                    },
+                    duration: 1,
+                    ease: 'power2.out'
+                });
+            };
+
+            animateSequentialIcons();
+            animateFooterText();
+        });
+    </script>
+</body>
+
+</html>

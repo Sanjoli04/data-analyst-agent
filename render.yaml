@@ -1,0 +1,38 @@
+# This file is a blueprint for deploying your application on Render.
+# It defines two services: a static site for the front-end and a web service for the back-end API.
+services:
+  # A service to host your static front-end files (HTML, CSS, JS).
+  # This is a good way to serve your index.html and associated assets.
+  - type: static
+    name: data-analyst-agent-client
+    # This section assumes your front-end files (like index.html) are at the root
+    # of your repository. If they are in a sub-directory, update the root directory.
+    rootDir: .
+    # The publish directory is the folder where the build output will be placed.
+    # Since this is a simple HTML file, we don't need a build command or a publish directory.
+    # The root directory is enough.
+
+  # A service to host your back-end API.
+  # This service is responsible for handling the API calls from your front-end.
+  # The front-end uses the /api endpoint, so this service must be configured to handle that.
+  - type: web
+    name: data-analyst-agent-api
+    runtime: python
+    # This should be the root of your back-end code.
+    # For example, if your backend is in a folder named 'backend', you would use `backend`.
+    # For this example, we assume it's in a `server` directory.
+    rootDir: ./server
+    # The build command installs dependencies and prepares your application.
+    # This example assumes you are using pip and a requirements.txt file.
+    buildCommand: pip install -r requirements.txt
+    # The start command runs your application. This example uses uvicorn for a FastAPI application.
+    # You will need to replace this with the command for your specific server.
+    # Example: "gunicorn app:app" for a Flask app or "npm start" for a Node.js app.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # The health check path is an endpoint Render can use to ensure your service is running.
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: API_KEY # Replace with your actual API key for the LLM
+        sync: false

@@ -1,0 +1,14 @@
+flask
+requests 
+pandas 
+openpyxl 
+xlrd 
+pyarrow 
+matplotlib
+python-dotenv
+bs4
+html5lib
+scikit-learn
+Pillow
+duckdb
+seaborn
