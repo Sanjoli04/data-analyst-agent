@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+env/
+pycache/
+*.pyc
+LICENSE
+README.md
+questions/
