@@ -25,9 +25,9 @@ services:
     # The build command installs dependencies and prepares your application.
     # This example assumes you are using pip and a requirements.txt file.
     buildCommand: pip install -r requirements.txt
-    # The start command runs your application. This example uses uvicorn for a Flask application.
-    # The port must be $PORT for Render.
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # The start command runs your application. This example uses Gunicorn, a standard WSGI server for Flask.
+    # We explicitly set a low number of workers and threads to conserve memory.
+    startCommand: gunicorn --workers 1 --threads 1 --bind 0.0.0.0:$PORT main:app
     # The health check path is an endpoint Render can use to ensure your service is running.
     healthCheckPath: /
     envVars:
