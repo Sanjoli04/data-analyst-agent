@@ -33,7 +33,7 @@ load_dotenv()
 APIPE_API_KEY = os.getenv("APIPE_API_KEY")
 
 app = Flask(__name__, template_folder='templates')
-
+app.config['MAX_CONTENT_LENGTH'] = 128 * 1024 * 1024
 @app.route('/')
 def index():
     return render_template('index.html')
