@@ -62,12 +62,24 @@ def call_llm_api(messages, tools=None):
     try:
         response = requests.post(api_url, headers=headers, data=json.dumps(payload), timeout=30)
         response.raise_for_status()
+        
+        # FIX: Check content type before parsing JSON
+        content_type = response.headers.get('Content-Type', '')
+        if 'application/json' not in content_type:
+            # If the response is not JSON, return a specific error with the raw content
+            raw_content = response.text
+            return {
+                "error": f"Received unexpected content from API. Expected 'application/json', got '{content_type}'. Raw content: {raw_content[:200]}..."
+            }
+        
         return response.json()
+
     except requests.exceptions.Timeout:
         return {"error": "API request timed out after 30 seconds."}
     except requests.exceptions.RequestException as e:
         print(f"Error calling AIPipe API: {e}")
         try:
+            # Try to get JSON even on an error status, but be ready to fail gracefully
             error_details = response.json()
             return {"error": f"Failed to connect to the AIPipe service. API Error: {error_details.get('error', 'No details provided.')}"}
         except (json.JSONDecodeError, UnboundLocalError):
@@ -344,9 +356,18 @@ def perform_sql_analysis(queries):
 
 @app.route('/api', methods=['POST'])
 def api_endpoint():
+    print("API endpoint called.")
     temp_dir = tempfile.mkdtemp()
     
     try:
+        # FIX: Check for the API key at the start of the function for better logging
+        if not APIPE_API_KEY:
+            print("ERROR: APIPE_API_KEY is not set. Cannot proceed with analysis.")
+            return jsonify({
+                'status': 'error', 
+                'message': 'APIPE_API_KEY is not configured in the environment. Please set this environment variable.'
+            }), 500
+
         uploaded_files = request.files.getlist('uploaded_files')
         query_text = ""
         data_file_paths = []
@@ -361,26 +382,29 @@ def api_endpoint():
                 data_file_paths.append(temp_filepath)
         
         if not query_text:
+            print("ERROR: No .txt query file was uploaded.")
             return jsonify({'status': 'error', 'message': 'No .txt query file was uploaded.'}), 400
 
         task_type = None
-
-        # Lowercased query for keyword checks
         query_lower = query_text.lower()
 
-        # 👇 Priority: scraping > sql > ml > local
         if re.search(r'\bscrap(e|ing)\b', query_lower):
             task_type = 'web_scraping'
         elif re.search(r'\bselect\b|\bfrom\b|\bwhere\b', query_lower, re.IGNORECASE):
             task_type = 'sql_analysis'
         elif data_file_paths:
-            # If a data file is present, assume local analysis
             task_type = 'local_analysis'
 
         if not task_type:
+            print("ERROR: No valid task type identified.")
             return jsonify({'status': 'error', 'message': "No valid data source provided from the query or files."}), 400
+        
+        print(f"Task type identified: {task_type}")
+        print("Calling LLM to extract parameters...")
 
         prompt = f"""
+        Extract the following information from the user's request and return it as a single JSON object.
+        
         When writing SQL queries for DuckDB:
         - For a regression slope, use `REGR_SLOPE(y, x)` exactly.
         - `STRPTIME(string, format)` is for converting strings to dates. `STRFTIME(format, date)` is for formatting dates as strings.
@@ -388,33 +412,31 @@ def api_endpoint():
         - The function `JULIANDAY` does not exist in DuckDB. If you need to convert a date to a Julian Day number, use the `julian()` function instead.
         - When performing date arithmetic to get the difference in days, cast both dates to a `DATE` type first. For example, `(julian(CAST(decision_date AS DATE)) - julian(CAST(date_of_registration AS DATE)))`.
 
-        Extract the following information from the user's request and return it as a single JSON object.
-        
         User's request:
         "{query_text}"
         
-        Your response must be a single JSON object with the following keys:
+        Your response must be a single JSON object with the following keys, and nothing else:
         - "url": (string, optional) The URL to scrape if the task is web scraping.
         - "queries": (object, optional) A JSON object with keys "q1", "q2", and "plot_data" for SQL queries, if the task is SQL analysis.
         - "questions": (array of strings) The questions to be answered.
         - "plot_columns": (array of strings) The two columns for the scatterplot, in the order [x, y].
         - "ml_task": (object, optional) A JSON object with "model_name" and "model_params" for a machine learning task.
-        
-        Do NOT include any other text or explanation in your response.
         """
 
-        print("Sending prompt to LLM to extract parameters...")
         messages = [
             {"role": "user", "content": prompt}
         ]
         llm_response = call_llm_api(messages=messages)
         
         if 'error' in llm_response:
+            print(f"ERROR: LLM API call failed: {llm_response['error']}")
             return jsonify({'status': 'error', 'message': llm_response['error']}), 500
         
+        llm_text_response = llm_response.get('choices')[0].get('message').get('content')
+        print(f"Raw LLM Response: {llm_text_response}")
+
         try:
-            llm_text_response = llm_response.get('choices')[0].get('message').get('content')
-            clean_json_str = re.sub(r'```json\s*(.*?)\s*```', r'\1', llm_text_response, flags=re.DOTALL)
+            clean_json_str = re.sub(r'```json\s*(.*?)\s*```', r'\1', llm_text_response, flags=re.DOTALL).strip()
             extracted_params = json.loads(clean_json_str)
 
             result = {}
@@ -441,22 +463,25 @@ def api_endpoint():
                 result = perform_sql_analysis(queries=extracted_params.get('queries'))
             
             if 'error' in result:
+                print(f"ERROR: Analysis failed: {result['error']}")
                 return jsonify({'status': 'error', 'message': result['error']}), 500
             
             final_response_data = result.get('answers', [])
             if result.get('plot'):
                 final_response_data.append(result.get('plot'))
 
+            print("Analysis successful.")
             return jsonify(final_response_data), 200
         
         except (KeyError, TypeError, IndexError, json.JSONDecodeError) as e:
+            print(f"ERROR: Failed to parse LLM response. Error: {str(e)}")
             return jsonify({
                 'status': 'error',
                 'message': f'Failed to parse LLM response. The LLM may not have returned valid JSON. Raw response: {llm_text_response}. Error: {str(e)}'
             }), 500
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"An unexpected error occurred: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
         
     finally:
