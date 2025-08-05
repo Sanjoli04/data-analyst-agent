@@ -21,18 +21,17 @@ services:
     # This should be the root of your back-end code.
     # For example, if your backend is in a folder named 'backend', you would use `backend`.
     # For this example, we assume it's in a `server` directory.
-    rootDir: ./server
+    rootDir: .
     # The build command installs dependencies and prepares your application.
     # This example assumes you are using pip and a requirements.txt file.
     buildCommand: pip install -r requirements.txt
-    # The start command runs your application. This example uses uvicorn for a FastAPI application.
-    # You will need to replace this with the command for your specific server.
-    # Example: "gunicorn app:app" for a Flask app or "npm start" for a Node.js app.
+    # The start command runs your application. This example uses uvicorn for a Flask application.
+    # The port must be $PORT for Render.
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     # The health check path is an endpoint Render can use to ensure your service is running.
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.0"
-      - key: API_KEY # Replace with your actual API key for the LLM
+      - key: APIPE_API_KEY # Replaced 'API_KEY' with 'APIPE_API_KEY' to match your Python code.
         sync: false
