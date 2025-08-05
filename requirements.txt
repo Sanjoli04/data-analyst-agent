@@ -12,4 +12,4 @@ scikit-learn
 Pillow
 duckdb
 seaborn
-uvicorn
+guicorn
