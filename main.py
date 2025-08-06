@@ -223,7 +223,7 @@ def perform_local_analysis(file_path, analysis_requests, ml_task=None):
                 if col1_name in df.columns and col2_name in df.columns:
                     df_filtered = df.dropna(subset=[col1_name, col2_name])
                     if not df_filtered.empty and len(df_filtered) >= 2:
-                        correlation = df_filtered[col1_name].corr(df_filtered[col2_name])
+                        correlation = df_filtered[col1_name].corr(df[col2_name])
                         answers.append(f"The correlation between {col1_name} and {col2_name} is {correlation:.2f}.")
                     else:
                         answers.append(f"Not enough numeric data (at least 2 valid pairs) to calculate correlation between {col1_name} and {col2_name} after cleaning.")
@@ -277,6 +277,19 @@ def parse_value_string(s):
         return float(s)
     except ValueError:
         return None
+
+def generate_s3_path_with_years(base_path, start_year, end_year):
+    """
+    Generates an optimized S3 path for DuckDB using year partitioning.
+    Example: 's3://bucket/path/year={2019,2020}/...'
+    """
+    if start_year and end_year:
+        years = range(int(start_year), int(end_year) + 1)
+        year_list = ','.join(map(str, years)) # Create a comma-separated string of years
+        # Replace 'year=*' or similar patterns with the specific year list
+        # This regex handles cases like year=*, year={*}, year={YYYY}
+        return re.sub(r'year=\{?\*?\}?', f'year={{{year_list}}}', base_path)
+    return base_path # Fallback if years are not provided
 
 def perform_web_scraping(url, scraping_config):
     """
@@ -457,9 +470,10 @@ def perform_web_scraping(url, scraping_config):
     except Exception as e:
         return {'error': f"An error occurred during web scraping analysis: {str(e)}"}
 
-def perform_sql_analysis(queries):
+def perform_sql_analysis(sql_config):
     """
-    Executes DuckDB queries and returns analysis results dynamically.
+    Executes DuckDB queries and returns analysis results dynamically,
+    with optimized S3 path generation.
     """
     answers = []
     plot_uri = None
@@ -468,18 +482,47 @@ def perform_sql_analysis(queries):
         con = duckdb.connect()
         con.execute("INSTALL httpfs; LOAD httpfs; INSTALL parquet; LOAD parquet;")
 
+        # Base S3 path from LLM, or default if not provided
+        base_s3_path_template = sql_config.get('base_s3_path', "s3://indian-high-court-judgments/metadata/parquet/year=*/court=*/bench=*/metadata.parquet")
+        s3_region = sql_config.get('s3_region', "ap-south-1") # Default region
+
+        # Dynamically generate optimized S3 path based on year range from LLM
+        start_year = sql_config.get('year_range', {}).get('start_year')
+        end_year = sql_config.get('year_range', {}).get('end_year')
+        
+        optimized_s3_path = generate_s3_path_with_years(
+            base_s3_path_template,
+            start_year,
+            end_year
+        )
+        print(f"Optimized S3 Path for DuckDB: {optimized_s3_path}?s3_region={s3_region}")
+
         # Iterate through all queries provided by the LLM
-        for key, query in queries.items():
+        for key, query_template in sql_config.get('queries', {}).items():
             try:
+                # Replace placeholder in query with the optimized S3 path
+                # The LLM is now expected to generate queries with a placeholder or the full path.
+                # We'll use a simple replace for now, assuming the LLM knows the structure.
+                # A more advanced solution might involve a templating engine.
+                query = query_template.replace("YOUR_OPTIMIZED_S3_PATH", f"{optimized_s3_path}?s3_region={s3_region}")
+
+                print(f"Executing SQL Query for '{key}': {query}")
+
                 if key == "plot_data":
                     # Special handling for the plot data query
                     df_plot = con.execute(query).fetchdf()
+                    print(f"Plot data DataFrame shape: {df_plot.shape}")
 
                     if df_plot.empty:
-                        answers.append("The plot data query returned an empty result.")
+                        answers.append(f"SQL Plot: The query for '{key}' returned an empty result.")
                         continue
 
                     # Dynamically get plot columns from the query result
+                    # LLM is expected to put x_col and y_col as the first two columns in plot_data query
+                    if len(df_plot.columns) < 2:
+                        answers.append(f"SQL Plot: Query for '{key}' did not return enough columns for plotting (expected at least 2).")
+                        continue
+
                     x_col, y_col = df_plot.columns[0], df_plot.columns[1]
 
                     # Ensure columns are numeric
@@ -487,15 +530,20 @@ def perform_sql_analysis(queries):
                     df_plot[y_col] = pd.to_numeric(df_plot[y_col], errors='coerce')
                     df_plot.dropna(subset=[x_col, y_col], inplace=True)
                     
-                    if df_plot.empty:
-                        answers.append('No numeric data to plot after cleaning.')
+                    if df_plot.empty or len(df_plot) < 2:
+                        answers.append(f"SQL Plot: No numeric data (at least 2 valid pairs) to plot after cleaning for '{key}'.")
                         continue
                     
                     # Create the plot
-                    plot_uri = create_plot(df_plot, x_col, y_col, regression=True)
+                    plot_result = create_plot(df_plot, x_col, y_col, regression=True)
+                    if isinstance(plot_result, dict) and 'error' in plot_result:
+                        answers.append(f"Plot generation failed for '{key}': {plot_result['error']}")
+                    else:
+                        plot_uri = plot_result
                 else:
                     # Handle all other queries and append their results to the answers list
                     result_df = con.execute(query).fetchdf()
+                    print(f"Result for '{key}' DataFrame shape: {result_df.shape}")
                     if not result_df.empty:
                         # Format the result based on the key name
                         result_value = result_df.iloc[0, 0] if len(result_df.columns) == 1 else result_df.to_dict('records')
@@ -570,7 +618,7 @@ def api_endpoint():
         You are a data analysis agent. Your task is to extract structured information from user requests for data analysis.
         
         For web scraping tasks, you MUST provide a "scraping_config" object.
-        For SQL analysis tasks, you MUST provide a "queries" object.
+        For SQL analysis tasks, you MUST provide a "sql_config" object.
         For local file analysis tasks, you MUST provide "analysis_requests" (similar to scraping_config's analysis_requests).
 
         ---
@@ -581,7 +629,9 @@ def api_endpoint():
         - IMPORTANT: `STRPTIME` is required when a date column is a string and the format is not `YYYY-MM-DD`. For example, for a string '01-01-1995', use `STRPTIME(date_column, '%d-%m-%Y')`.
         - The function `JULIANDAY` does not exist in DuckDB. If you need to convert a date to a Julian Day number, use the `julian()` function instead.
         - When performing date arithmetic to get the difference in days, cast both dates to a `DATE` type first. For example, `(julian(CAST(decision_date AS DATE)) - julian(CAST(date_of_registration AS DATE)))`.
-        - For SQL analysis of S3 parquet files, try to filter by year in the path if possible (e.g., `year={2019,2020}`).
+        - For SQL analysis of S3 parquet files, **CRITICALLY IMPORTANT**: filter by specific years in the S3 path using `year={{YYYY,YYYY,...}}` to leverage partitioning and avoid out-of-memory errors for large datasets. For example, `s3://indian-high-court-judgments/metadata/parquet/year={{2019,2020}}/court=*/bench=*/metadata.parquet?s3_region=ap-south-1`.
+        - If the user specifies a year range (e.g., "from 2019 to 2022"), extract `start_year` and `end_year` and include them in `sql_config.year_range`.
+        - When asked to plot data from SQL queries, ensure the `plot_data` query in `sql_config.queries` selects the X-axis column as the first column and the Y-axis column as the second column.
 
         ---
         
@@ -624,7 +674,21 @@ def api_endpoint():
                     // Ensure ALL other questions are also parsed into separate analysis_requests objects.
                 ]
             }},
-            "queries": (object, optional) A JSON object where keys are descriptive names (e.g., "most_cases_court", "delay_regression_slope") and values are SQL queries. Include a "plot_data" key for the query that generates data for plotting.
+            "sql_config": {{
+                "base_s3_path": (string) The base S3 path for the data, e.g., "s3://indian-high-court-judgments/metadata/parquet/".
+                "s3_region": (string) The S3 region, e.g., "ap-south-1".
+                "year_range": {{
+                    "start_year": (integer, optional) The start year for SQL queries, if specified.
+                    "end_year": (integer, optional) The end year for SQL queries, if specified.
+                }},
+                "queries": (object) A JSON object where keys are descriptive names (e.g., "most_cases_court", "delay_regression_slope") and values are SQL queries. Include a "plot_data" key for the query that generates data for plotting.
+                // Example for question2.txt's SQL queries (note the year filtering in path):
+                // "queries": {
+                //   "most_cases_court": "SELECT court FROM read_parquet('s3://indian-high-court-judgments/metadata/parquet/year={2019,2020,2021,2022}/court=*/bench=*/metadata.parquet?s3_region=ap-south-1') GROUP BY court ORDER BY COUNT(*) DESC LIMIT 1;",
+                //   "delay_regression_slope": "SELECT REGR_SLOPE(julian(CAST(decision_date AS DATE)) - julian(CAST(date_of_registration AS DATE)), year) FROM read_parquet('s3://indian-high-court-judgments/metadata/parquet/year={2019,2020,2021,2022}/court=33_10/bench=*/metadata.parquet?s3_region=ap-south-1');",
+                //   "plot_data": "SELECT year, (julian(CAST(decision_date AS DATE)) - julian(CAST(date_of_registration AS DATE))) AS delay_days FROM read_parquet('s3://indian-high-court-judgments/metadata/parquet/year={2019,2020,2021,2022}/court=33_10/bench=*/metadata.parquet?s3_region=ap-south-1');"
+                // }
+            }},
             "analysis_requests": (array of objects, optional) For local file analysis, this is a list of structured analysis requests, similar to scraping_config.analysis_requests.
             "ml_task": (object, optional) A JSON object with "model_name" and "model_params" for a machine learning task.
         }}
@@ -656,7 +720,7 @@ def api_endpoint():
                 current_analysis_requests = extracted_params['scraping_config'].get('analysis_requests', [])
                 print(f"Analysis requests (before injection): {json.dumps(current_analysis_requests, indent=2)}")
 
-                # Check for count_items_before_year (Question 1)
+                # Check for count_items_before_year (Question 1 from question.txt)
                 count_q1_exists = any(req['type'] == 'count_items_before_year' for req in current_analysis_requests)
                 if not count_q1_exists and "how many $2 bn movies were released before 2000" in query_lower:
                     current_analysis_requests.append({
@@ -666,7 +730,7 @@ def api_endpoint():
                     })
                     print("Injected missing 'count_items_before_year' analysis request.")
 
-                # Check for earliest_item_over_value (Question 2)
+                # Check for earliest_item_over_value (Question 2 from question.txt)
                 earliest_q2_exists = any(req['type'] == 'earliest_item_over_value' for req in current_analysis_requests)
                 if not earliest_q2_exists and "earliest film that grossed over $1.5 bn" in query_lower:
                     current_analysis_requests.append({
@@ -676,7 +740,7 @@ def api_endpoint():
                     })
                     print("Injected missing 'earliest_item_over_value' analysis request.")
 
-                # Check for correlation request (Question 3)
+                # Check for correlation request (Question 3 from question.txt)
                 correlation_exists = any(req['type'] == 'correlation' for req in current_analysis_requests)
                 if not correlation_exists and "correlation between the rank and peak" in query_lower:
                     current_analysis_requests.append({
@@ -686,7 +750,7 @@ def api_endpoint():
                     })
                     print("Injected missing 'correlation' analysis request.")
 
-                # Check for plot request (Question 4)
+                # Check for plot request (Question 4 from question.txt)
                 plot_exists = any(req['type'] == 'plot' for req in current_analysis_requests)
                 if not plot_exists and "draw a scatterplot of rank and peak" in query_lower:
                     current_analysis_requests.append({
@@ -724,9 +788,10 @@ def api_endpoint():
                     ml_task=extracted_params.get('ml_task')
                 )
             elif task_type == 'sql_analysis':
-                if not extracted_params.get('queries'):
-                    return jsonify({'status': 'error', 'message': 'LLM did not provide SQL queries.'}), 400
-                result = perform_sql_analysis(queries=extracted_params.get('queries'))
+                sql_config = extracted_params.get('sql_config')
+                if not sql_config or not sql_config.get('queries'):
+                    return jsonify({'status': 'error', 'message': 'LLM did not provide SQL queries in sql_config.'}), 400
+                result = perform_sql_analysis(sql_config=sql_config) # Pass the sql_config object
             
             if 'error' in result:
                 print(f"ERROR: Analysis failed: {result['error']}")
