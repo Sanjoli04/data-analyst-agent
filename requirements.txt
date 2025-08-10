@@ -13,3 +13,4 @@ Pillow
 duckdb
 seaborn
 gunicorn
+playwright
