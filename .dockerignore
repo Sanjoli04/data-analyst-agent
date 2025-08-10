@@ -7,3 +7,4 @@ pycache/
 LICENSE
 README.md
 questions/
+*/__pycache__/
