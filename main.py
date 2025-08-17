@@ -129,7 +129,7 @@ def api_endpoint():
             return jsonify({'error': result['error']}), 500
         
         final_response_data = result.get('answers', ["No textual answer produced."])
-        return jsonify(final_response_data), 200
+        return json.dumps(final_response_data), 200
 
     except Exception as e:
         print(f"FATAL ERROR in /api endpoint: {e}")
