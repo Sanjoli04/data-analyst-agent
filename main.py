@@ -1,4 +1,4 @@
-# main.py (Refactored)
+# main.py (Updated with Placeholder Replacement)
 from flask import Flask, request, render_template, jsonify
 import os
 import tempfile
@@ -14,6 +14,7 @@ from prompts.prompt_manager import get_prompt
 from analysis.sql_analyzer import run_sql_analysis
 from analysis.web_scraper import perform_dynamic_web_scraping
 from analysis.local_analyzer import perform_local_analysis
+from analysis.network_analyzer import perform_network_analysis
 from utils.llm_api import call_llm_api
 
 load_dotenv()
@@ -26,8 +27,8 @@ def index():
 
 @app.route('/api', methods=['POST'])
 def api_endpoint():
-    if not os.getenv("APIPE_API_KEY"):
-        return jsonify({'error': 'API key is not configured on the server.'}), 500
+    if not os.getenv("GOOGLE_GEMINI_API_KEY"):
+        return jsonify({'error': 'GOOGLE_GEMINI_API_KEY is not configured on the server.'}), 500
 
     temp_dir = tempfile.mkdtemp()
     try:
@@ -61,23 +62,22 @@ def api_endpoint():
             task_type = 'web_scraping'
         elif any(keyword in query_lower for keyword in ['select ', ' from ', 'sql']):
             task_type = 'sql_analysis'
+        elif any(keyword in query_lower for keyword in ['network', 'graph', 'edges', 'nodes', 'degree']):
+            task_type = 'network_analysis'
         
         result = {}
 
-        # --- NEW DIRECT WORKFLOW FOR WEB SCRAPING ---
         if task_type == 'web_scraping':
             print("INFO: Starting Web Scraping Task")
             scraping_config = {"url": url_match.group(0), "objective": query_text}
             result = perform_dynamic_web_scraping(scraping_config)
         
-        # --- STANDARD WORKFLOW FOR SQL AND LOCAL ANALYSIS ---
-        else: # task_type is 'sql_analysis' or 'local_analysis'
-            if task_type == 'local_analysis' and data_file_paths:
+        else:
+            if data_file_paths:
                 try:
                     peek_path = data_file_paths[0]
-                    if peek_path.endswith('.csv'):
-                        df_peek = pd.read_csv(peek_path, nrows=1, on_bad_lines='skip')
-                        file_info['columns'] = list(df_peek.columns)
+                    df_peek = pd.read_csv(peek_path, nrows=1, on_bad_lines='skip')
+                    file_info['columns'] = list(df_peek.columns)
                 except Exception as e:
                     print(f"Could not peek into file for columns: {e}")
 
@@ -96,9 +96,16 @@ def api_endpoint():
                 return jsonify({'error': f"Failed to parse LLM JSON response: {e}. Raw: {raw_content}"}), 500
 
             if task_type == 'sql_analysis':
-                for name in file_info['names']:
+                # --- FIX: Replace the generic placeholder with the actual file read function ---
+                if data_file_paths:
+                    filepath = data_file_paths[0]
+                    read_function = f"read_csv_auto('{filepath}')"
+                    if filepath.endswith('.parquet'):
+                        read_function = f"read_parquet('{filepath}')"
+                    
                     for qk, qv in config['sql_config']['queries'].items():
-                        config['sql_config']['queries'][qk] = qv.replace(f"'{name}'", f"read_csv_auto('{os.path.join(temp_dir, name)}')")
+                        config['sql_config']['queries'][qk] = qv.replace("'placeholder.csv'", read_function)
+                
                 result = run_sql_analysis(config['sql_config'])
             
             elif task_type == 'local_analysis':
@@ -106,8 +113,13 @@ def api_endpoint():
                 result = perform_local_analysis(
                     file_paths=data_file_paths,
                     analysis_requests=config_data.get('analysis_requests', []),
-                    ml_task=config_data.get('ml_task'),
-                    image_analysis_task=config_data.get('image_analysis_task')
+                    ml_task=config_data.get('ml_task')
+                )
+            elif task_type == 'network_analysis':
+                config_data = config['network_analysis_config']
+                result = perform_network_analysis(
+                    file_paths=data_file_paths,
+                    analysis_requests=config_data.get('analysis_requests', [])
                 )
         
         if 'error' in result:
@@ -125,10 +137,4 @@ def api_endpoint():
             shutil.rmtree(temp_dir)
 
 if __name__ == '__main__':
-    if not os.path.exists('templates'):
-        os.makedirs('templates')
-    if not os.path.exists('templates/index.html'):
-        with open('templates/index.html', 'w') as f:
-            f.write("<html><body><h1>Data Analyst Agent</h1><p>Ready for analysis.</p></body></html>")
-            
     app.run(debug=True, host='0.0.0.0', port=5001)

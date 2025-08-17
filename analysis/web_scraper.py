@@ -1,111 +1,100 @@
-import pandas as pd
-import traceback
 import asyncio
 import textwrap
-import re
-import codecs
+import traceback
 from playwright.async_api import async_playwright, TimeoutError
 from utils.llm_api import call_llm_api
-# Import the new prompt variables
-from prompts.web_scraping_prompts import PROMPT_HEADER, PROMPT_FOOTER
+from prompts.web_scraping_prompts import get_code_generation_prompt
 
-# This template is used to build the final, runnable script
-SCRIPT_TEMPLATE = """
-import asyncio
-from playwright.async_api import async_playwright, TimeoutError
-import pandas as pd
-import time
-import re
-import io
-import base64
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-import traceback
-from scipy.stats import linregress
-
-async def main():
-    # Default to None, so we can check if it was ever assigned
-    scraped_data = None
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        try:
+async def execute_scraping_logic(page, logic_block: str):
+    """Run the generated scraping code inside a controlled async environment."""
+    # This function creates a temporary async function to execute the AI's code.
+    # It ensures that the 'page' object is correctly passed and that any result is captured.
+    # --- FIX: Removed 'scraped_data = None' to prevent conflict with the AI's logic. ---
+    # The AI's script is now fully responsible for creating and assigning the 'scraped_data' variable.
+    function_code = f"""
+async def _ai_logic(page):
 {logic_block}
-            # --- FIX: Add a final check after the AI's code runs ---
-            if scraped_data is None:
-                print("Execution finished, but 'scraped_data' was not assigned.")
-                scraped_data = ["Error: The AI's logic completed without producing a result. This could be due to no data matching its criteria."]
-
-        except Exception as e:
-            scraped_data = [f"A critical error occurred: {{repr(e)}}\\n{{traceback.format_exc()}}"]
-        finally:
-            await browser.close()
+    # We now check if the AI's script successfully created the variable at all.
+    if 'scraped_data' not in locals():
+        return ["Error: The AI's logic completed without producing a result variable."]
     return scraped_data
 """
-
-# This function executes the generated script
-async def _execute_scraping_code_async(code_string):
+    # A sandbox dictionary to hold the dynamically executed function.
     sandbox = {}
     try:
-        exec(code_string, sandbox)
-        main_coroutine = sandbox.get('main')
-        if not asyncio.iscoroutinefunction(main_coroutine):
-            return {"error": "No valid async main() found in generated code"}
-        return await main_coroutine()
+        # Execute the string as Python code, defining the _ai_logic function.
+        exec(function_code, sandbox)
+        # Call the newly defined function and return its result.
+        return await sandbox['_ai_logic'](page)
     except Exception as e:
-        print("--- ERROR EXECUTING SCRIPT ---")
-        print(code_string)
+        # If the generated code has a syntax or runtime error, catch it.
         error_trace = traceback.format_exc()
-        print(error_trace)
-        return {"error": f"Execution of generated script failed: {e}", "traceback": error_trace}
+        return [f"Execution of generated script failed: {e}\n{error_trace}"]
 
-# This function orchestrates the web scraping task
 def perform_dynamic_web_scraping(config):
-    url, objective = config.get("url"), config.get("objective")
+    """
+    Orchestrates the entire web scraping process, from browser launch to completion.
+    """
+    url = config.get("url")
+    objective = config.get("objective")
     if not all([url, objective]):
-        return {"error": "Missing 'url' or 'objective' in config"}
+        return {"error": "Missing 'url' or 'objective' for web scraping."}
 
-    # Construct the prompt safely in two parts
-    formatted_footer = PROMPT_FOOTER.format(url=url, objective=objective)
-    prompt = PROMPT_HEADER + formatted_footer
+    # --- Step 1: Generate the prompt and get the AI's logic ---
+    prompt = get_code_generation_prompt(url=url, objective=objective)
+    messages = [{"role": "user", "content": prompt}]
     
-    llm_response = call_llm_api([{"role": "user", "content": prompt}])
-
+    llm_response = call_llm_api(messages)
     if 'error' in llm_response:
         return {"error": f"LLM API Error: {llm_response['error']}"}
-    if not llm_response.get("choices") or not isinstance(llm_response.get("choices"), list) or len(llm_response["choices"]) == 0:
-        return {"error": f"The LLM API returned a response with no valid 'choices'."}
 
     try:
-        raw_content = llm_response['choices'][0]['message']['content']
-        if '\\' in raw_content:
-             raw_content = codecs.decode(raw_content, 'unicode_escape')
-
-        logic_block = raw_content
-        match = re.search(r"```(?:python)?\s*\n(.*)```", raw_content, re.DOTALL)
-        if match:
-            logic_block = match.group(1)
+        # Extract the Python code block from the LLM's response.
+        logic_block = llm_response['choices'][0]['message']['content']
+        if '```python' in logic_block:
+            logic_block = logic_block.split('```python')[1].split('```')[0]
         
-        indented_logic = textwrap.indent(textwrap.dedent(logic_block).strip(), ' ' * 12)
-        full_script = SCRIPT_TEMPLATE.format(logic_block=indented_logic)
+        # Clean up the code block's indentation to prepare it for injection.
+        dedented_logic = textwrap.dedent(logic_block).strip()
+        indented_logic = textwrap.indent(dedented_logic, '    ')
+    except (KeyError, IndexError) as e:
+        return {"error": f"Failed to parse logic block from LLM response: {e}"}
 
-    except Exception as e:
-        return {"error": f"An unexpected error occurred while preparing the script: {e}"}
+    # --- Step 2: Define the main async workflow to run the browser ---
+    async def run_browser_task():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            
+            print(f"Navigating to {url}...")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            
+            # Attempt to automatically handle common cookie/consent banners.
+            consent_locator = page.locator(
+                "button:has-text('Accept'), button:has-text('Agree'), "
+                "button:has-text('OK'), button:has-text('Allow all'), "
+                "button:has-text('Accept all')"
+            )
+            try:
+                await consent_locator.first.click(timeout=3000)
+                print("Consent banner handled.")
+            except TimeoutError:
+                print("No consent banner found, which is fine. Continuing.")
+            
+            print("Waiting for page to fully load...")
+            await page.wait_for_load_state("networkidle", timeout=60000)
+            print("Page is ready. Executing AI logic...")
 
+            # Execute the AI's logic on the fully prepared page.
+            result = await execute_scraping_logic(page, indented_logic)
+            
+            await browser.close()
+            return {"answers": result}
+
+    # --- Step 3: Run the async workflow and return the final result ---
     try:
-        scraped_result = asyncio.run(_execute_scraping_code_async(full_script))
-
-        if isinstance(scraped_result, dict) and 'error' in scraped_result:
-            return scraped_result
-        if isinstance(scraped_result, list):
-            return {"answers": scraped_result}
-        
-        # This handles the case where the script returns a single non-list item
-        if scraped_result is not None:
-             return {"answers": [str(scraped_result)]}
-        
-        # This should now be caught by the new logic in the template, but as a fallback:
-        return {"error": "Script finished with an unexpected None result."}
+        # This is the entry point that starts the async browser operations.
+        return asyncio.run(run_browser_task())
     except Exception as e:
-        return {"error": f"A critical error occurred while running the async task: {e}"}
+        traceback.print_exc()
+        return {"error": f"A critical error occurred during the async scraping task: {e}"}
