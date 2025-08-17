@@ -48,7 +48,7 @@ pip install -r requirements.txt
 ### 🔐 Setup Environment Variables
 - Create a .env file in the root directory with your API key for the LLM service:
 ```env
-APIPE_API_KEY="your-api-key-here"
+GOOGLE_GEMINI_API_KEY="your-api-key-here"
 ```
 ### ▶️ Run the Application
 - Start the Flask development server:
@@ -70,7 +70,7 @@ python main.py
 
 - GSAP — Front-end animations
 
-- Render — Cloud deployment
+- Render/Cloud Run — Cloud deployment
 
 ### 📄 License
 `This project is licensed under the MIT License.`
