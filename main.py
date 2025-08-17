@@ -1,4 +1,4 @@
-# main.py (Updated with Placeholder Replacement)
+# main.py (Updated with Universal SQL Placeholder)
 from flask import Flask, request, render_template, jsonify
 import os
 import tempfile
@@ -60,7 +60,7 @@ def api_endpoint():
         
         if "scrape" in query_lower and url_match:
             task_type = 'web_scraping'
-        elif any(keyword in query_lower for keyword in ['select ', ' from ', 'sql']):
+        elif any(keyword in query_lower for keyword in ['select ', ' from ', 'sql', 'duckdb']):
             task_type = 'sql_analysis'
         elif any(keyword in query_lower for keyword in ['network', 'graph', 'edges', 'nodes', 'degree']):
             task_type = 'network_analysis'
@@ -96,15 +96,18 @@ def api_endpoint():
                 return jsonify({'error': f"Failed to parse LLM JSON response: {e}. Raw: {raw_content}"}), 500
 
             if task_type == 'sql_analysis':
-                # --- FIX: Replace the generic placeholder with the actual file read function ---
-                if data_file_paths:
+                # --- FIX: Universal Placeholder Replacement Logic ---
+                read_function = ""
+                # Determine if it's the S3 remote task or a local file task
+                if "indian high court" in query_lower or "s3://" in query_lower:
+                    read_function = "read_parquet('s3://indian-high-court-judgments/metadata/parquet/year=*/court=*/bench=*/metadata.parquet?s3_region=ap-south-1')"
+                elif data_file_paths:
                     filepath = data_file_paths[0]
                     read_function = f"read_csv_auto('{filepath}')"
-                    if filepath.endswith('.parquet'):
-                        read_function = f"read_parquet('{filepath}')"
-                    
+                
+                if read_function:
                     for qk, qv in config['sql_config']['queries'].items():
-                        config['sql_config']['queries'][qk] = qv.replace("'placeholder.csv'", read_function)
+                        config['sql_config']['queries'][qk] = qv.replace("source_data", read_function)
                 
                 result = run_sql_analysis(config['sql_config'])
             

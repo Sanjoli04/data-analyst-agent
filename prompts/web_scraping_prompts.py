@@ -1,17 +1,20 @@
-# prompts/web_scraping_prompts.py (Final Resilient Version)
+# prompts/web_scraping_prompts.py (BeautifulSoup Masterclass)
 
 PROMPT_HEADER = """
-You are a world-class Python developer specializing in web scraping and data analysis. Your primary function is to generate a Python script snippet that is generic and can handle any web scraping task.
-**CRITICAL INSTRUCTION**: Do not write hardcoded logic. Your script must be adaptable and resilient, using the dynamic, await-based patterns demonstrated below. You must not use `asyncio.run()`.
+You are a world-class Python developer specializing in web scraping and data analysis. Your primary function is to generate a Python script to parse a provided HTML string and answer the user's objective.
 
-Your mission is to write a script that accomplishes the user's objective by following the Masterclass Example.
+--- CRITICAL RULES ---
+- Your script will be executed in an environment where a variable `html_content` (containing the full page HTML) is already defined.
+- You MUST use the `BeautifulSoup` library for all HTML parsing.
+- Do NOT write hardcoded logic. Your script must be adaptable. Specifically, do not hardcode column names in your analysis; derive them from the scraped table.
+- Your final output MUST be a list of strings assigned to a variable named `scraped_data`.
 
 --- MASTERCLASS EXAMPLE ---
-Study this perfect script that scrapes a generic Wikipedia table. It is highly resilient and uses the correct asynchronous pattern. You must imitate its structure precisely.
+Study this perfect script that scrapes a generic Wikipedia table from an HTML string. You must imitate its robust and adaptable patterns to succeed.
 
 ```python
 # --- Start of Gold Standard Example Snippet ---
-from playwright.async_api import TimeoutError
+from bs4 import BeautifulSoup
 import pandas as pd
 import re
 import io
@@ -19,67 +22,44 @@ import base64
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Define the main async logic in a function.
-async def scrape_and_analyze(page):
-    # --- 1. INITIALIZATION ---
-    scraped_data_list = []
-    raw_data_for_debugging = []
-    table_locator = None
+# The 'html_content' variable is provided by the execution environment.
+soup = BeautifulSoup(html_content, 'html.parser')
 
-    # --- 2. RESILIENT SCRAPING LOGIC ---
-    try:
-        possible_selectors = ["table.wikitable.sortable", "table.wikitable", "table[class*='wikitable']"]
-        for selector in possible_selectors:
-            try:
-                table_locator = page.locator(selector).first
-                await table_locator.wait_for(timeout=5000)
-                print(f"INFO: Table found with selector: '{selector}'")
-                break
-            except TimeoutError:
-                print(f"INFO: Selector '{selector}' did not find a table.")
-                continue
-                
-        if not table_locator:
-            raise TimeoutError("Could not find a suitable data table on the page after trying all selectors.")
+# --- 1. RESILIENT SCRAPING LOGIC ---
+scraped_data_list = []
+table = soup.find('table', {'class': 'wikitable'}) # Find the main data table
 
-        header_locators = await table_locator.locator("thead tr").last.locator("th").all()
-        
-        raw_headers = [re.sub(r'\\s+', ' ', (await th.text_content() or '')).strip() for th in header_locators]
-        headers = [re.sub(r'[^0-9a-zA-Z_]', '', h.replace(' ', '_')).lower() for h in raw_headers]
+if table:
+    # --- 2. DYNAMIC HEADER DETECTION & CLEANING ---
+    headers = []
+    # Find the last row in the header, which usually contains the correct column names
+    header_row = table.find('thead').find_all('tr')[-1] 
+    for th in header_row.find_all('th'):
+        header_text = re.sub(r'\\s+', ' ', th.get_text(strip=True))
+        # Clean the header to be a valid, lowercase identifier
+        cleaned_header = re.sub(r'[^0-9a-zA-Z_]', '', header_text.replace(' ', '_')).lower()
+        headers.append(cleaned_header)
 
-        all_row_locators = await table_locator.locator("tbody tr").all()
-
-        for row_locator in all_row_locators:
-            cell_locators = await row_locator.locator("th, td").all()
-            if not cell_locators or len(cell_locators) != len(headers):
-                continue
-
-            raw_texts = [(await cell.text_content() or '').strip() for cell in cell_locators]
-            if not any(raw_texts):
-                continue
-
-            raw_data_for_debugging.append(" | ".join(raw_texts))
-            row_data = {headers[i]: raw_texts[i] for i in range(len(headers))}
+    # --- 3. RESILIENT ROW PARSING ---
+    for row in table.find('tbody').find_all('tr'):
+        # Find all cell types (th for header-like cells in rows, td for data cells)
+        cells = row.find_all(['th', 'td'])
+        if len(cells) == len(headers):
+            row_data = {headers[i]: cell.get_text(strip=True) for i, cell in enumerate(cells)}
             scraped_data_list.append(row_data)
 
-    except TimeoutError as e:
-        return [f"Error: {e}"]
-    except Exception as e:
-        return [f"An unexpected error occurred during scraping: {str(e)}"]
-
-    # --- 3. ANALYSIS & FINALIZATION ---
-    if not scraped_data_list:
-        return ["Error: No valid data rows could be parsed.", "RAW DATA PREVIEW:"] + raw_data_for_debugging[:5]
-    
+# --- 4. ANALYSIS & FINALIZATION ---
+if not scraped_data_list:
+    scraped_data = ["Error: No valid data rows could be parsed from the table."]
+else:
     df = pd.DataFrame(scraped_data_list)
     
-    # --- FIX: Robust data cleaning and type conversion ---
-    # Clean common reference links and then iterate through each column.
-    df.replace(r'\\[[a-zA-Z0-9]+\\]', '', regex=True, inplace=True)
+    # --- 5. ROBUST DATA CLEANING & TYPE CONVERSION ---
+    df.replace(r'\\[[a-zA-Z0-9]+\\]', '', regex=True, inplace=True) # Clean wiki references
     for col in df.columns:
-        # First, clean the string values in the column to remove non-numeric characters.
+        # First, clean the string values to remove non-numeric characters.
         df[col] = df[col].astype(str).str.replace(r'[^0-9.\\-]', '', regex=True)
-        # Now, convert to numeric, coercing any remaining errors into Not-a-Number (NaN).
+        # Then, convert to numeric, coercing any remaining errors into Not-a-Number (NaN).
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     num_items = len(df)
@@ -106,16 +86,13 @@ async def scrape_and_analyze(page):
     except Exception as plot_e:
         image_answer = f"Could not generate plot: {plot_e}"
 
-    return [
+    scraped_data = [
         "Success: Analysis complete.",
         f"Total items scraped: {num_items}",
         "Data Summary:",
         description,
         image_answer
     ]
-
-# The final result is the execution of the async function.
-scraped_data = await scrape_and_analyze(page)
 # --- End of Gold Standard Example Snippet ---
 ```
 """
@@ -124,13 +101,22 @@ PROMPT_FOOTER = """
 --- YOUR MISSION ---
 - **URL:** {url}
 - **OBJECTIVE:** {objective}
+- **HTML CONTENT**: The full HTML of the page is provided in the `html_content` variable.
 
-Now, using the exact same adaptable and resilient patterns from the Masterclass Example, write the scraping and analysis logic to fulfill the user's objective. Your final output MUST be assigned to the `scraped_data` variable by awaiting the main async function.
+Now, using the exact same adaptable and resilient patterns from the Masterclass Example, write a Python script to parse the `html_content` and fulfill the user's objective. Your final output MUST be assigned to the `scraped_data` variable.
 """
 
-def get_code_generation_prompt(url: str, objective: str) -> str:
+def get_code_generation_prompt(url: str, objective: str, html_content: str) -> str:
     """
     Constructs the full, formatted prompt for the LLM by combining the header and footer.
     """
+    # We only pass a snippet of the HTML to the LLM to avoid exceeding token limits,
+    # but the full HTML is available in the execution environment.
+    html_snippet = html_content[:4000]
+    
+    # We don't actually need to pass the snippet in the prompt text itself,
+    # as the instruction is just to use the `html_content` variable.
+    # This keeps the prompt cleaner.
+    
     full_prompt = PROMPT_HEADER + PROMPT_FOOTER.format(url=url, objective=objective)
     return full_prompt
